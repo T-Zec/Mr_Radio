@@ -14,27 +14,33 @@ TOKEN = os.getenv("MR_TOKEN")
 intents = discord.Intents.default()
 intents.message_content = True
 
-bot = commands.Bot(command_prefix=prefix, intents=intents)
+default_prefix = "="
+guild_prefix = {}
+volume = 0.6
+img_url = "https://imgs.search.brave.com/oYO8-wCU7td8awAWW9DRcYp5fjuRrpUMQ84j2upQGT4/rs:fit:860:0:0:0/g:ce/aHR0cHM6Ly9jbGlw/YXJ0LWxpYnJhcnku/Y29tL2ltZzEvMTYx/MDg1MS5naWY.gif"
+
+bot = commands.Bot(command_prefix=default_prefix, intents=intents)
 
 #url = "https://stream-174.zeno.fm/q97eczydqrhvv?zt=eyJhbGciOiJIUzI1NiJ9.eyJzdHJlYW0iOiJxOTdlY3p5ZHFyaHZ2IiwiaG9zdCI6InN0cmVhbS0xNzQuemVuby5mbSIsInJ0dGwiOjUsImp0aSI6InRhOHAxeTRDVDdHenYtN2NoeFQxRmciLCJpYXQiOjE3NDIwNDA3NDEsImV4cCI6MTc0MjA0MDgwMX0.MkjhfjpDcWKnjIHhgkq3SGxg9gH8U901CrsfPZ42PGM"
 #url = "https://rfianglais96k.ice.infomaniak.ch/rfianglais-96k.mp3"
 
-prefix = "="
-guild_prefix = {}
-volume = 0.6
-
-if not prefix:
-    prefix = "="  # Default prefix if not set
 # Store guild-specific prefixes
 @bot.event
 async def on_guild_join(guild):
-    guild_prefix[guild.id] = prefix  # Set default prefix for new guilds
+    if guild.id not in guild_prefix:
+        guild_prefix[guild.id] = default_prefix  # Set default prefix for new guilds
+
+@bot.event
+async def on_guild_update(before, after):
+    if before.id in guild_prefix:
+        guild_prefix[after.id] = guild_prefix[before.id]  # Keep the same prefix if the guild is updated
 
 @bot.event
 async def on_guild_remove(guild):
     if guild.id in guild_prefix:
-        del guild_prefix[guild.id]  # Remove prefix when the bot leaves a guild
+        del guild_prefix[guild.id]
 
+## READY ##
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
@@ -46,12 +52,10 @@ async def hello(ctx):
 # Change prefix
 @bot.command()
 async def prefix(ctx, new_prefix: str):
-    global prefix
     global guild_prefix
     if len(new_prefix) == 1:  # Ensure the new prefix is a single character
-        prefix = new_prefix
         guild_prefix[ctx.guild.id] = new_prefix  # Store the prefix for the guild
-        await ctx.send(f"Prefix changed to: {prefix}")
+        await ctx.send(f"Prefix changed to: {new_prefix}")
     else:
         await ctx.send("Please provide a single character as the new prefix.")
 
@@ -70,7 +74,7 @@ async def join(ctx):
 async def leave(ctx):
     if ctx.voice_client:    # Check if the bot is connected to a voice channel
         await ctx.voice_client.disconnect() # Disconnect
-        await ctx.send(f"Disconnected from the Voice Channel!")
+        await ctx.send("Disconnected from the Voice Channel!")
     else:
         await ctx.send("I am not connected to any voice channel!")
 
@@ -84,7 +88,7 @@ async def vol(ctx, vol: float):
                 ctx.voice_client.source.volume = vol / 100
                 await ctx.send(f"Volume set to {int(vol)}%")
             else:
-                await ctx.send(f"Please provide a volume between 0 to 100 (Max-200)")
+                await ctx.send("Please provide a volume between 0 to 100 (Max-200)")
         else:
             await ctx.send("No audio is playing right now!")
     else:
@@ -119,15 +123,14 @@ class PlayerControls(View):
         self.is_paused = False
 
     async def update_embed(self, station):
-        embed = discord.Embed(title = f"▶ Now Playing", 
+        embed = discord.Embed(title = "▶ Now Playing", 
                               description= f"**Radio Stream**\nVolume: {int(volume * 100)}%",
                               color = 0x00ffcc
                               )
-        embed.set_thumbnail(url="https://imgs.search.brave.com/oYO8-wCU7td8awAWW9DRcYp5fjuRrpUMQ84j2upQGT4/rs:fit:860:0:0:0/g:ce/aHR0cHM6Ly9jbGlw/YXJ0LWxpYnJhcnku/Y29tL2ltZzEvMTYx/MDg1MS5naWY.gif")
+        embed.set_thumbnail(url=station.get("favicon") if station.get("favicon") else (bot.user.avatar.url if bot.user.avatar else img_url))
         embed.set_author(name="Mr. Radio", icon_url=self.ctx.author.avatar.url if self.ctx.author.avatar else self.ctx.author.default_avatar.url)
         embed.add_field(name="Country", value=station.get("country", "Unknown"), inline=True)
         embed.add_field(name="Language", value=station.get("language", "Unknown").title(), inline=True)
-        embed.add_field(name="Volume", value=f"{int(volume * 100)}%", inline=True)
         embed.set_footer(text=f"Use {prefix}help for more commands")
 
         # Update the message with the new embed
@@ -147,29 +150,36 @@ class PlayerControls(View):
         else:
             await interaction.response.send_message("Bot is not connected to a voice channel!", ephemeral=True)
         await self.update_embed(self.ctx.voice_client.source.station)  # Update the embed with the current station info
-        await interaction.response.defer()  # Acknowledge the interaction without sending a message
 
     @discord.ui.button(label="⏸", style=ButtonStyle.primary)
     async def toggle_playback(self, interaction: Interaction, button: discord.ui.Button):
         if interaction.user != self.ctx.author:
             await interaction.response.send_message("You can't control this player!", ephemeral=True)
             return
-        if self.ctx.voice_client and self.ctx.voice_client.is_playing():
-            if self.ctx.voice_client.is_paused():
+        if self.ctx.voice_client:
+            if self.ctx.voice_client.is_playing():
+                if self.ctx.voice_client.is_paused():
+                    self.ctx.voice_client.resume()
+                    self.is_paused = False
+                    button.label = "⏸"  # Change label to pause
+                    button.style = ButtonStyle.primary
+                else:
+                    self.ctx.voice_client.pause()
+                    self.is_paused = True
+                    button.label = "▶"  # Change label to play
+                    button.style = ButtonStyle.success
+            elif self.ctx.voice_client.is_paused():
                 self.ctx.voice_client.resume()
                 self.is_paused = False
-                button.label = "⏸"  # Change label to pause
+                button.label = "⏸"
                 button.style = ButtonStyle.primary
             else:
-                self.ctx.voice_client.pause()
-                self.is_paused = True
-                button.label = "▶"  # Change label to play
-                button.style = ButtonStyle.success
+                await interaction.response.send_message("No audio is playing right now!", ephemeral=True)
+                return
             await interaction.response.edit_message(view=self)  # Update the message with the new button state
             await self.update_embed(self.ctx.voice_client.source.station)  # Update the embed with the current station info
         else:
             await interaction.response.send_message("No audio is playing right now!", ephemeral=True)
-        await interaction.response.defer()  # Acknowledge the interaction without sending a message
 
     @discord.ui.button(label="⏭", style=ButtonStyle.primary)
     async def next_button(self, interaction: Interaction, button: discord.ui.Button):
@@ -300,15 +310,15 @@ async def radiourl(ctx, url: str, volume: float = 0.6):
             ctx.voice_client.play(player)
             # Create an embed message
             embed = discord.Embed(
-                title = f"▶ Now Playing",
+                title = "▶ Now Playing",
                 description= f"**Radio Stream**\nVolume: {int(volume * 100)}%",
                 color = 0x00ffcc
             )
-            embed.set_thumbnail(url="https://imgs.search.brave.com/oYO8-wCU7td8awAWW9DRcYp5fjuRrpUMQ84j2upQGT4/rs:fit:860:0:0:0/g:ce/aHR0cHM6Ly9jbGlw/YXJ0LWxpYnJhcnku/Y29tL2ltZzEvMTYx/MDg1MS5naWY.gif")
+            embed.set_thumbnail(url=img_url)
             embed.set_author(name="Mr. Radio", icon_url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
             embed.set_footer(text=f"Use {prefix}help for more commands")
 
-            await ctx.send(embed=embed, View=PlayerControls(ctx))
+            await ctx.send(embed=embed, view=PlayerControls(ctx))
         except discord.ClientException:
             await ctx.send("Already playing a stream!")
         except Exception as e:
@@ -367,16 +377,17 @@ async def play_current_station(ctx):
         try:
             source = FFmpegPCMAudio(stream_url, **ffmpeg_options)
             player = PCMVolumeTransformer(source, volume=volume)
+            player.station = station  # Attach the station info to the player object
             ctx.voice_client.stop()
             ctx.voice_client.play(player)
 
             # Create an embed message
             embed = discord.Embed(
-                title = f"▶ Now Playing",
+                title = "▶ Now Playing",
                 description= f"**{station_name}**\nIndex: {idx + 1}/{len(stations)}",
                 color = 0x00ffcc
             )
-            embed.set_thumbnail(url="https://imgs.search.brave.com/oYO8-wCU7td8awAWW9DRcYp5fjuRrpUMQ84j2upQGT4/rs:fit:860:0:0:0/g:ce/aHR0cHM6Ly9jbGlw/YXJ0LWxpYnJhcnku/Y29tL2ltZzEvMTYx/MDg1MS5naWY.gif")
+            embed.set_thumbnail(url=station.get("favicon"))
             embed.set_author(name="Mr. Radio", icon_url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
             embed.add_field(name="Country", value=station.get("country", "Unknown"), inline=True)
             embed.add_field(name="Language", value=station.get("language", "Unknown").title(), inline=True)
@@ -386,7 +397,7 @@ async def play_current_station(ctx):
             view = PlayerControls(ctx, None)
             message = await ctx.send(embed=embed, view=view)  # Add player controls to the message
             view.message = message  # Store the message reference in the view for future updates
-            view.update_embed(station)  # Update the embed with the current station info
+            await view.update_embed(station)  # Update the embed with the current station info
             
         except discord.ClientException:
             await ctx.send("Already playing a stream!")
